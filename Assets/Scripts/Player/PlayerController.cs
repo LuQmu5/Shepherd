@@ -1,142 +1,68 @@
-using System.Collections;
+﻿using System;
 using UnityEngine;
 
-[RequireComponent(typeof(Rigidbody))]
 public class PlayerController : MonoBehaviour
 {
-    [Header("Components")]
-    [SerializeField] private Camera _lookCamera;
-    [SerializeField] private WeaponView _weaponView;
+    [SerializeField] private PlayerMotor _motor;
+    [SerializeField] private PlayerLook _look;
+    [SerializeField] private PlayerJump _jump;
+    [SerializeField] private RocketLauncher _rocketLauncher;
     [SerializeField] private Rigidbody _rigidbody;
+    [SerializeField] private Transform _legsPoint;
+    [SerializeField] private LayerMask _groundMask;
 
-    [Header("Movement Settings")]
-    [SerializeField] private float moveSpeed = 10f;
-    [SerializeField] private float acceleration = 15f;    // ���������
-    [SerializeField] private float deceleration = 10f;    // ����������
-    [SerializeField] private float jumpForce = 7f;
-    [SerializeField] private LayerMask groundMask;
-    [SerializeField] private Transform legs;
+    private IPlayerInput _input;
+    private float _currentHealth = 4;
 
-    [Header("Mouse Settings")]
-    [SerializeField] private float mouseSensitivity = 100f;
-    [SerializeField] private float verticalLookLimit = 85f;
+    public bool OnGround => Physics.OverlapSphere(_legsPoint.position, 0.5f, _groundMask).Length > 0;
+    public event Action Dead;
 
-    [Header("Combat Settings")]
-    [SerializeField] private float shootPower = 10f;
-    [SerializeField] private float recoilBackForce = 6f;
-    [SerializeField] private float recoilUpForce = 3f;
-
-    private Weapon _weapon;
-    private float _rotationX = 0f;
-    private Vector3 _moveInput;
-    private Vector3 _targetVelocity;
-    private Coroutine _chargingCoroutine;
-
-    private void Awake()
+    public void Init(IPlayerInput input)
     {
-        if (!_rigidbody) _rigidbody = GetComponent<Rigidbody>();
-        _rigidbody.freezeRotation = true;
-    }
-
-    public void Init(ProjectileFactory factory)
-    {
+        _input = input;
         Cursor.lockState = CursorLockMode.Locked;
-        _weapon = new Weapon(factory, _weaponView.ShootPoint, shootPower);
     }
 
     private void Update()
     {
-        HandleMouseLook();
-        HandleInput();
+        _motor.SetMoveInput(transform.right * _input.Horizontal + transform.forward * _input.Vertical);
+        _look.Look(_input.MouseX, _input.MouseY);
+        _jump.TryJump(_input.Jump);
 
-        if (Input.GetKeyDown(KeyCode.Mouse0))
+        if (_input.FireHeld)
+            _rocketLauncher.StartCharge();
+
+        if (_input.FireReleased)
         {
-            _chargingCoroutine = StartCoroutine(Charging());
+            _rocketLauncher.ReleaseCharge();
+
+            if (OnGround)
+                ApplyRecoil();
         }
     }
 
-    private void Shoot(float multiplier)
+    public void TakeDamage(float damage)
     {
-        _weaponView.PlayRecoil(multiplier);
-        _weapon.Shoot(multiplier);
-        ApplyRecoil(multiplier);
-    }
+        _currentHealth -= damage;
 
-    private IEnumerator Charging()
-    {
-        float maxChargeTime = 2;
-        float currentTime = 0.6f;
-
-        while (currentTime < maxChargeTime)
+        if (_currentHealth <= 0)
         {
-            currentTime += Time.deltaTime * 2;
-
-            if (Input.GetKeyUp(KeyCode.Mouse0))
-                break;
-
-            yield return null;
-        }
-
-        Shoot(currentTime);
-        _chargingCoroutine = null;
-    }
-
-    private void FixedUpdate()
-    {
-        HandleMovement();
-    }
-
-    private void HandleInput()
-    {
-        float x = Input.GetAxisRaw("Horizontal");
-        float z = Input.GetAxisRaw("Vertical");
-        _moveInput = (transform.right * x + transform.forward * z).normalized;
-
-        if (Input.GetButtonDown("Jump") && OnGround())
-        {
-            _rigidbody.AddForce(Vector3.up * jumpForce, ForceMode.Impulse);
+            _currentHealth = 0;
+            Die();
         }
     }
 
-    private void HandleMovement()
+    private void Die()
     {
-        Vector3 desiredVelocity = _moveInput * moveSpeed;
-        Vector3 velocity = _rigidbody.linearVelocity;
-
-        Vector3 velocityXZ = new Vector3(velocity.x, 0, velocity.z);
-
-        if (_moveInput.magnitude > 0.1f)
-        {
-            velocityXZ = Vector3.MoveTowards(velocityXZ, desiredVelocity, acceleration * Time.fixedDeltaTime);
-        }
-        else
-        {
-            velocityXZ = Vector3.MoveTowards(velocityXZ, Vector3.zero, deceleration * Time.fixedDeltaTime);
-        }
-
-        _rigidbody.linearVelocity = new Vector3(velocityXZ.x, velocity.y, velocityXZ.z);
+        Dead?.Invoke();
+        gameObject.SetActive(false);
     }
 
-    private void HandleMouseLook()
+    private void ApplyRecoil()
     {
-        float mouseX = Input.GetAxis("Mouse X") * mouseSensitivity * Time.deltaTime;
-        float mouseY = Input.GetAxis("Mouse Y") * mouseSensitivity * Time.deltaTime;
-
-        _rotationX -= mouseY;
-        _rotationX = Mathf.Clamp(_rotationX, -verticalLookLimit, verticalLookLimit);
-
-        _lookCamera.transform.localRotation = Quaternion.Euler(_rotationX, 0f, 0f);
-        transform.Rotate(Vector3.up * mouseX);
-    }
-
-    private void ApplyRecoil(float multiplier)
-    {
-        Vector3 recoilDir = -transform.forward * recoilBackForce + Vector3.up * recoilUpForce;
-        _rigidbody.AddForce(recoilDir * multiplier, ForceMode.Impulse);
-    }
-
-    private bool OnGround()
-    {
-        return Physics.CheckSphere(legs.position, 0.2f, groundMask);
+        float recoilCoeff = 0.2f;
+        float recoilPower = _rocketLauncher.CurrentPower * recoilCoeff;
+        Vector3 recoilDirection = transform.forward * -1 + transform.up;
+        _rigidbody.AddForce(recoilDirection * recoilPower, ForceMode.Impulse);
     }
 }
